@@ -12,8 +12,6 @@ CFLAGS	= -I. -I${EVIO_INC} \
 		-L. -L${EVIO_LIB} \
 		-levio -levioxx -lrt -lexpat
 CFLAGS	+= -g -Wall
-AR	= ar
-RANLIB	= ranlib
 
 PROGS	= evio2hex
 

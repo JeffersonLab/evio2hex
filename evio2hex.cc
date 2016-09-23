@@ -10,7 +10,6 @@
 // ejw, 1-may-2012
 
 
-
 #include <iostream>
 #include <stdio.h>
 #include "evioUtil.hxx"
@@ -21,112 +20,136 @@
 using namespace evio;
 using namespace std;
 
-
-//--------------------------------------------------------------
-//--------------------------------------------------------------
-
-
-// callbacks for stream parser
-class handler: public evioStreamParserHandler {
-
-
-  // do nothing with container nodes
-  void *containerNodeHandler(int bankLength, int containterType, int contentType, unsigned short tag, unsigned char num, 
-                             int depth, const uint32_t *bankPointer, int payloadLength, const uint32_t *payload, void *userArg) {
-    return(userArg);
+class InputParser
+{
+public:
+  InputParser(int &argc, char **argv)
+  {
+    for (int i = 1; i < argc; ++i)
+      this->tokens.push_back(string(argv[i]));
   }
-  
-  
-//--------------------------------------------------------------
-
-
-  void *leafNodeHandler(int bankLength, int containterType, int contentType, unsigned short tag, unsigned char num, 
-                        int depth, const uint32_t *bankPointer, int dataLength, const void *data, void *userArg) {
-    
-    // add banks containing doubles to event tree
-    // alternatively, skip the tree entirely and process the data now, or store the data someplace for later processing
-    if(contentType==0x8) ((evioDOMTree*)(userArg))->addBank(tag,num,(double*)data,dataLength);
-
-    return(userArg);
-  } 
-
+  /// @author iain
+  const string & getCmdOption(const string & option) const
+  {
+    vector < string >::const_iterator itr;
+    itr = find(this->tokens.begin(), this->tokens.end(), option);
+    if (itr != this->tokens.end() && ++itr != this->tokens.end())
+      {
+	return *itr;
+      }
+    return "";
+  }
+  /// @author iain
+  bool cmdOptionExists(const string & option) const
+  {
+    return find(this->tokens.begin(), this->tokens.end(), option)
+      != this->tokens.end();
+  }
+private:
+    vector < string > tokens;
 };
 
-
 //--------------------------------------------------------------
 //--------------------------------------------------------------
 
 
-int main(int argc, char **argv) {
+int
+main(int argc, char **argv)
+{
+  InputParser input(argc, argv);
+  int32_t usertag = 0, usernum = 0;
+  
+  if(input.cmdOptionExists("-t"))
+    {
+      usertag = strtol(input.getCmdOption("-t").c_str(), NULL, 10);
+    }
 
-  try {
+  if(input.cmdOptionExists("-n"))
+    {
+      usernum = strtol(input.getCmdOption("-n").c_str(), NULL, 10);
+    }
+
+  try
+  {
 
     // create and open file channel
     evioFileChannel *chan;
-    if(argc>1) {
-      chan = new evioFileChannel(argv[1],"r");
-    } else {
-      chan = new evioFileChannel("fakeEvents.dat","r");
-    }
+    if (argc > 1)
+      {
+	chan = new evioFileChannel(argv[argc-1], "r");
+      }
+    else
+      {
+	chan = new evioFileChannel("fakeEvents.dat", "r");
+      }
     chan->open();
+
+    int32_t version = 0;
+    int stat = chan->ioctl("V",&version);
+    cout << "# EVIO Version  " << version << endl;
+
+    uint32_t *buffer, blen;
+    tagNum tn;
     
+    while (chan->readAlloc((uint32_t **)&buffer, &blen))
+      {
+	uint64_t eventNumber=0;
+	const uint64_t *d64;
+	const uint32_t *d32;
+	evioBankIndex bi(buffer);
 
-    // create parser and handler
-    evioStreamParser p;
-    handler h;
-    
+	int len;
 
-    // read events (no copy) from channel, then parse them
-    // event tree will get filled by parser callbacks with selected banks
-    // alternatively, you can just process the data in the callback and skip event trees altogether
-    while(chan->readNoCopy()) {
+	if(version < 4)
+	  {
+	    tn.first = 0xC000;
+	    tn.second = 0;
+	    d32 = bi.getData < uint32_t >(tn, &len);
+	    if(d32 != NULL)
+	      eventNumber = d32[0];
+	  }
+	else
+	  {
+	    tn.first = 0x0;
+	    tn.second = 0;
+	    d64 = bi.getData < uint64_t >(tn, &len);
+	    if(d64 != NULL)
+	      eventNumber = d64[0];
+	  }
 
-      // create empty tree, then stream parse event and fill tree with selected banks
-      evioDOMTree event(1,0);
-      p.parse(chan->getNoCopyBuffer(),h,((void*)(&event)));
-      cout << endl << event.toString() << endl;
+	// Check to see if this event falls into the user specified range 
+	if(eventNumber)
+	  cout << "# EventNumber " << eventNumber << endl;
+	
+	// Get the ROC / Payload data
+	tn.first  = usertag;
+	tn.second = usernum;
 
+	d32 = bi.getData < uint32_t >(tn, &len);
 
-      // create bank index from contents of noCopy buffer
-      evioBankIndex bi(chan->getNoCopyBuffer());
-
-
-      // query the index and get <double> data for some tagNum
-      int len;
-      tagNum tn(11,21);
-
-      cout << endl << endl << "Count of banks with tagNum " << tn.first << "," << (int)tn.second << " is: " << bi.tagNumCount(tn) << endl;
-      const double *d = bi.getData<double>(tn,&len);
-      if(d!=NULL) {
-        cout << "data length: " << len << endl;
-        cout << "some data <double> for tagNum " << tn.first << "," << (int)tn.second<< ":  " << endl; 
-        for(int i=0; i<min(len,10); i++) cout << d[i] << "  ";
-        cout << endl;
-      } else {
-        cout << "?cannot find <double> data for: " << tn.first << "," << (int)tn.second << endl;
+	if (d32 != NULL)
+	  {
+	    for (int i = 0; i < len; i++)
+	      printf("0x%08x  ", d32[i]);
+	    cout << endl;
+	  }
+	// else
+	//   {
+	//     cout << "?cannot find <uint32_t> data for: " << tn.first << "," <<
+	//       (int) tn.second << endl;
+	//   }
+	
+	free(buffer);
       }
-    
 
-      // query the index and get <int32_t> data for some tagNum
-      tagNum tn2(32,37);
-      cout << endl << endl << "Count of banks with tagNum " << tn2.first << "," << (int)tn2.second << " is: " << bi.tagNumCount(tn2) << endl;
-      const int32_t *ii = bi.getData<int32_t>(tn2,&len);
-      if(ii!=NULL) {
-        cout << "data length: " << len << endl;
-        cout << "some data <int32_t> for tagNum " << tn2.first << "," << (int)tn2.second<< ":  " << endl; 
-        for(int i=0; i<min(len,10); i++) cout << ii[i] << "  ";
-        cout << endl;
-      } else {
-        cout << "?cannot find <int32_t> data for: " << tn2.first << "," << (int)tn2.second << endl;
-      }
-    }    
-    
-    
-  } catch (evioException e) {
+
+  }
+  catch(evioException e)
+  {
     cerr << e.toString() << endl;
     exit(EXIT_FAILURE);
   }
-  
+
 }
 
 
